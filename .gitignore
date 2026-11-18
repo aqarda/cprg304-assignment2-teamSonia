@@ -1,0 +1,12 @@
+# Compiled output
+bin/
+*.class
+target/
+
+# Eclipse workspace metadata — never belongs in a repo
+.metadata/
+
+# OS / editor junk
+.DS_Store
+Thumbs.db
+*.log
