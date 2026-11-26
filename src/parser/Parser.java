@@ -122,17 +122,19 @@ public class Parser
             return;
         }
 
+        boolean[] angle = classifyAngles( line );
+
         for( int i = 0; i < line.length(); i++ )
         {
             char c = line.charAt( i );
 
             try
             {
-                if( isOpening( c ) || ( c == '<' && !isComparison( line, i ) ) )
+                if( isOpening( c ) || ( c == '<' && angle[i] ) )
                 {
                     stack.push( encode( c, lineNumber ) );
                 }
-                else if( isClosing( c ) || ( c == '>' && !isComparison( line, i ) ) )
+                else if( isClosing( c ) || ( c == '>' && angle[i] ) )
                 {
                     processClosing( c, lineNumber );
                 }
@@ -385,20 +387,67 @@ public class Parser
     }
 
     /**
-     * Decides whether the {@code <} or {@code >} at a position is a comparison
-     * (or arrow) rather than an angle bracket.
+     * Works out which {@code <} and {@code >} characters on a line are angle
+     * brackets and which are comparisons, shifts or arrows.
      * <p>
-     * It is a comparison when it is part of {@code <=}, {@code >=}, {@code ->}
-     * or {@code =>}, or when it has whitespace (or a line edge) on both sides,
-     * as in {@code a < b}. Anything else, such as {@code <stdio.h>}, is an
-     * angle bracket.
+     * A {@code <} is an angle bracket when it is not part of an operator such
+     * as {@code <=} or {@code <<}, and either the line is an
+     * {@code #include} line or a matching {@code >} follows it with only
+     * name-like characters in between (so {@code <stdio.h>} and
+     * {@code List<String>} count, but {@code i<n;} and {@code a<b && c>d} do
+     * not). A {@code >} is an angle bracket when it closes one of those
+     * openers, or when it stands on its own at the end of a name (for example
+     * a stray {@code >} after {@code stdio.h}).
+     * </p>
+     *
+     * @param line  the line to classify
+     * @return an array with one entry per character, {@code true} where the
+     *         character is an angle bracket
+     */
+    private boolean[] classifyAngles( String line )
+    {
+        boolean[] result = new boolean[line.length()];
+        boolean includeLine = line.trim().startsWith( "#include" );
+        int depth = 0;
+
+        for( int i = 0; i < line.length(); i++ )
+        {
+            char c = line.charAt( i );
+
+            if( c == '<' && !isOperator( line, i ) && ( includeLine || hasPartner( line, i ) ) )
+            {
+                result[i] = true;
+                depth++;
+            }
+            else if( c == '>' && !isOperator( line, i ) )
+            {
+                if( depth > 0 )
+                {
+                    result[i] = true;
+                    depth--;
+                }
+                else if( isStandaloneCloser( line, i ) )
+                {
+                    result[i] = true;
+                }
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Checks whether a {@code <} or {@code >} is part of an operator or has
+     * spaces on both sides, which makes it a comparison rather than a bracket.
+     * <p>
+     * Covers {@code <=}, {@code >=}, {@code <<}, {@code ->}, {@code =>} and
+     * comparisons such as {@code a < b}.
      * </p>
      *
      * @param line   the line containing the character
      * @param index  the position of the {@code <} or {@code >}
-     * @return {@code true} if the character should be ignored as a comparison
+     * @return {@code true} if the character is an operator, not a bracket
      */
-    private boolean isComparison( String line, int index )
+    private boolean isOperator( String line, int index )
     {
         char c = line.charAt( index );
         char prev = index > 0 ? line.charAt( index - 1 ) : ' ';
@@ -408,11 +457,76 @@ public class Parser
         {
             return true;
         }
+        if( c == '<' && ( next == '<' || prev == '<' ) )
+        {
+            return true;
+        }
         if( c == '>' && ( prev == '-' || prev == '=' ) )
         {
             return true;
         }
         return Character.isWhitespace( prev ) && Character.isWhitespace( next );
+    }
+
+    /**
+     * Checks whether a {@code <} has a {@code >} after it on the same line
+     * with only name-like characters (letters, digits and a few symbols such
+     * as {@code . , : * / -}) in between.
+     *
+     * @param line   the line containing the {@code <}
+     * @param start  the position of the {@code <}
+     * @return {@code true} if a partner {@code >} follows
+     */
+    private boolean hasPartner( String line, int start )
+    {
+        if( start + 1 >= line.length() || Character.isWhitespace( line.charAt( start + 1 ) ) )
+        {
+            return false;
+        }
+
+        for( int j = start + 1; j < line.length(); j++ )
+        {
+            char ch = line.charAt( j );
+
+            if( ch == '>' )
+            {
+                return j > start + 1;
+            }
+            if( !( Character.isLetterOrDigit( ch ) || " _.,:*/-<[]".indexOf( ch ) >= 0 ) )
+            {
+                return false;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Checks whether a {@code >} that has no opener on its line should still
+     * count as a (stray) closing angle bracket.
+     * <p>
+     * It does when it directly follows a non-space character and is followed
+     * (after any further {@code >} characters) by the end of the line or
+     * punctuation, as in {@code stdio.h>}. It does not when an operand
+     * follows, as in {@code a>b} or the shift {@code a>>1}.
+     * </p>
+     *
+     * @param line   the line containing the {@code >}
+     * @param index  the position of the {@code >}
+     * @return {@code true} if the {@code >} should be treated as a bracket
+     */
+    private boolean isStandaloneCloser( String line, int index )
+    {
+        if( index == 0 || Character.isWhitespace( line.charAt( index - 1 ) ) )
+        {
+            return false;
+        }
+
+        int after = index + 1;
+        while( after < line.length() && line.charAt( after ) == '>' )
+        {
+            after++;
+        }
+        return after == line.length() || ";,)]}:{*&".indexOf( line.charAt( after ) ) >= 0;
     }
 
     /**
